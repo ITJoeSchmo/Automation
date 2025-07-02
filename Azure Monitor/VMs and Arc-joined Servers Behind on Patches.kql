@@ -1,0 +1,11 @@
+// this query uses a .txt file that is uploaded to an Azure Storage Blob, see ./AzureAutomation/Sync-WindowsServerCUVersionToBlob.ps1
+arg("").resources
+| where type =~ "microsoft.hybridcompute/machines" or type =~ 'Microsoft.Compute/virtualMachines'
+| where properties.osType == "windows" or properties.licenseType =~ "Windows_Server"
+| where properties.extended.instanceView.powerState.displayStatus != "VM deallocated"
+| project name, type, fqdn=properties.dnsFqdn, OS=iff(isnull(properties.osSku),tostring(properties.extended.instanceView.osName),tostring(properties.osSku)), OSVersion=iff(isnull(properties.osVersion),tostring(properties.extended.instanceView.osVersion),tostring(properties.osVersion))
+| join kind=leftanti (
+    externaldata(OSVersion:string)
+    [
+        h@'https://AUTOMATION.blob.core.windows.net/os-patch-compliance/latestOSversions.txt'
+    ]) on OSVersion
