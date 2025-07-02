@@ -1,6 +1,10 @@
 <#
+.SYNOPSIS
     Synchronizes the latest Windows Server CU version strings from updates deployed via ADR in MECM to an Azure Blob storage container.
     For use with the KQL query "VMs and Arc-joined Servers Behind on Patches" in ./Azure Monitor/ of this repo
+.NOTES
+    Author: Joey Eckelbarger 
+    Date: 07-02-2025
 #>
 Connect-MECM {
     # get Server Update ADRs
