@@ -1,0 +1,443 @@
+<#
+.SYNOPSIS
+    Creates a new temporary directory with an optional suffix and subdirectories.
+
+.DESCRIPTION
+    The New-TemporaryDirectory function generates a temporary directory in the system's temporary folder using a GUID as the base name. You can optionally append a suffix to the directory name and create multiple subdirectories inside it.
+
+.PARAMETER suffix
+    An optional string that will be appended as a suffix to the directory name. If not provided, the directory will be named solely using the GUID.
+
+.PARAMETER subdirectories
+    An optional array of subdirectory names. These directories will be created inside the newly generated temporary directory. If no subdirectories are specified, only the base temporary directory is created.
+
+.EXAMPLE
+    PS C:\> New-TemporaryDirectory -suffix "test"
+    
+    Creates a temporary directory with a GUID as the base name and ".test" as the suffix. For example: C:\Users\User\AppData\Local\Temp\1234abcd.test
+
+.EXAMPLE
+    PS C:\> New-TemporaryDirectory -subdirectories "logs", "data"
+    
+    Creates a temporary directory and two subdirectories, "logs" and "data", within it. For example:
+    C:\Users\User\AppData\Local\Temp\1234abcd\logs
+    C:\Users\User\AppData\Local\Temp\1234abcd\data
+
+.EXAMPLE
+    PS C:\> New-TemporaryDirectory -suffix "backup" -subdirectories "config", "scripts"
+    
+    Creates a temporary directory with the suffix ".backup" and two subdirectories "config" and "scripts" inside it.
+
+.RETURNS
+    System.IO.DirectoryInfo object representing the parent folder.
+
+.NOTES
+    Author: https://stackoverflow.com/users/27581/michael-kropat found @ https://stackoverflow.com/questions/34559553/create-a-temporary-directory-in-powershell
+    
+    9-20-2024 Joey Eckelbarger: Added suffix,subdirectories params 
+#>
+
+function New-TemporaryDirectory {
+    param(
+        [string]$suffix,
+        [string[]]$subdirectories
+    )
+
+    $tmp = [System.IO.Path]::GetTempPath() # Not $env:TEMP, see https://stackoverflow.com/a/946017
+    $name = (New-Guid).ToString("N")
+    if($suffix){
+        $name = $name + "." + $suffix
+    }
+    $parentFolder = New-Item -ItemType Directory -Path (Join-Path $tmp $name)
+
+    foreach($subdirectory in $subdirectories){
+        $subdir = New-Item -ItemType Directory -Path (Join-Path $parentFolder.FullName $subdirectory)
+    }
+    return $parentFolder
+}
+
+<#
+.SYNOPSIS
+    Generates a secure password and returns a PSCredential object.
+
+.DESCRIPTION
+    The New-SecurePassword function generates a secure password based on the specified length and character set.
+    The generated password will include a minimum number of lowercase letters, uppercase letters, numbers, and symbols as specified.
+    If a username is provided, it will be used as the key name in a vault corresponding to AD, Entra accounts, or App IDs for App Registrations.
+    The function returns a PSCredential object, which can be used to reference the generated password securely. 
+
+    The function uses System.Security.Cryptography.RandomNumberGenerator to ensure cryptographically secure randomness.
+    Cryptographically secure randomness refers to the generation of random values in such a way that it's infeasible to predict future values
+    based on past or present ones, even with knowledge of the system's state. This level of randomness is crucial for security-related tasks,
+    such as generating encryption keys, tokens, or secure passwords where predictability could lead to vulnerabilities.
+
+.PARAMETER length
+    The length of the generated password. The default value is 65.
+    Default: 65
+
+.PARAMETER characterSet
+    The character set to use for generating the password. The default value is 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:,.<>?'.
+    Default: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:,.<>?'
+
+.PARAMETER MinimumLowerUpperNumbersSymbols
+    An array specifying the minimum number of lowercase letters, uppercase letters, numbers, and symbols in the password. The default value is @(3, 3, 3, 3).
+    Default: @(3, 3, 3, 3)
+
+.PARAMETER Username
+    The username or key name. Defaults to a whitespace character, in which case the credential object will only be leveraged to reference the generated password.
+    Default: " "
+
+.EXAMPLE
+    PS C:\> New-SecurePassword
+    Generates a secure password of length 65 using the default character set and minimum character requirements, with an empty username.
+
+.EXAMPLE
+    PS C:\> New-SecurePassword -length 20 -MinimumLowerUpperNumbersSymbols @(2, 2, 1, 1) -Username "Administrator"
+    Generates a PSCredential with a password length of 20 using the specified character set and meeting the minimum character requirements (2 lower and upper, 1 symbol, 1 number), with "Administrator" as the username.
+
+.NOTES
+    Author: Joey Eckelbarger
+#>
+function New-SecurePassword {
+    [CmdletBinding()]
+    param (
+        [int]$Length          = 65, # 25 is a good standard for privileged accts; I noticed we usually go with 65 in Vault
+        [string]$CharacterSet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:,.<>?',
+        [array]$MinimumLowerUpperNumbersSymbols = @(3,3,3,3), # Minimums [0] = Lowercase, [1] = Uppercase, [2] = Numbers, [3] = Symbols
+        [string]$Username     = " "        # you can set a username for the returned PSCredential, may be helpful in some cases
+    )                                  # it is easier to decrypt a password from a [PSCredential] than it is from a [SecureString]
+                                       # $credential.GetNetworkCredential().Password 
+
+    # labeled continue allows re-generation if criteria is not met
+    :retry while($true){
+
+        # initialize byte array sized for desired pwd length
+        $bytes = [byte[]]::new($length)
+
+        # System.Security.Cryptography.RandomNumberGenerator ensures cryptographically secure randomness to follow best practice
+
+        # Cryptographically secure randomness: generation of random values in such a way that it's infeasible to predict future values
+        # based on past or present ones, even with knowledge of the system's state. This level of randomness is crucial for 
+        # security-related tasks, such as generating encryption keys, tokens, or secure passwords where predictability could lead to vulnerabilities.
+
+        # There is a built-in Method within .NET [System.Web.Security.Membership]::GeneratePassword() but it is not available in .NET Core which is why I chose this route. 
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        $rng.GetBytes($bytes) # populate the byte array w/ random values 
+
+        # Convert each byte to a character from the character set to form the password
+        $password = ($bytes | ForEach-Object { $CharacterSet[$_ % $CharacterSet.Length] }) -join ''
+
+        # Define character classes
+        $lowerCasePattern = "[a-z]"
+        $upperCasePattern = "[A-Z]"
+        $numberPattern    = "\d"
+        $symbolPattern    = "[\W_]"
+
+        # evaluate # of each char in the generated password to ensure it meets our criteria
+        # logic is: after removing the specified chars, the string length should be less than the password length minus the minimum char count ($minCharCountPerType)
+        # e.g. evaluate p4$$w0rd for a minimum of 2 numbers: p4$$w0rd (8 char) -> p$$wrd (6 char) = 2 char difference, so there are 2 numbers -> $true
+        $Lower   = ($Password -creplace $lowerCasePattern,'').Length -le ($Password.Length - $minimumLowerUpperNumbersSymbols[0])
+        $Upper   = ($Password -creplace $upperCasePattern,'').Length -le ($Password.Length - $minimumLowerUpperNumbersSymbols[1])
+        $Number  = ($Password -replace $numberPattern,    '').Length -le ($Password.Length - $minimumLowerUpperNumbersSymbols[2])
+        $Symbol  = ($Password -replace $symbolPattern,    '').Length -le ($Password.Length - $minimumLowerUpperNumbersSymbols[3])
+
+        $passwordMeetsAllCriteria = $Lower -and $Upper -and $Number -and $Symbol
+
+        if(-Not $passwordMeetsAllCriteria){
+            continue retry # restart loop; this jumps back to :retry 
+        }
+        
+        $password = ConvertTo-SecureString $password -AsPlainText -Force
+        $credential = New-Object System.Management.Automation.PSCredential($userName, $password)
+        $password = $null
+
+        return $credential
+    }
+}
+
+ <#
+.SYNOPSIS
+    Processes and enhances the ErrorRecord output for better troubleshooting.
+
+.DESCRIPTION
+    The Out-Error function is designed to be used within a Catch block to perform additional processing on the ErrorRecord.
+    It enhances the output to include a stack trace, prepends the function name the error originated from, and writes out the modified error. 
+    If the Throw switch is provided, it will terminate execution after processing the error.
+
+.PARAMETER ErrorRecord
+    The ErrorRecord object that was thrown in the Catch block. This parameter is mandatory and must be provided.
+
+.PARAMETER Throw
+    A switch parameter that, if provided, will terminate the script execution after writing out the enhanced error. 
+    This parameter is optional.
+
+.EXAMPLE
+    try {
+        # Code that may throw an error
+    } catch {
+        Out-Error -ErrorRecord $_
+    }
+
+    This example demonstrates how to use Out-Error in a Catch block to process the ErrorRecord.
+
+.EXAMPLE
+    try {
+        # Code that may throw an error
+    } catch {
+        Out-Error -ErrorRecord $_ -Throw
+    }
+
+    This example demonstrates how to use Out-Error in a Catch block to process the ErrorRecord and terminate the script execution after processing.
+
+.NOTES
+    Author: Joey Eckelbarger
+#>
+function Out-Error {
+    [CmdletBinding()]
+    param(
+        $ErrorRecord,
+        [switch]$Throw
+    )
+
+    # There are 2 "At lines" in our handled error output -- one from the StackTrace and one from the InvocationInfo.
+    # this additional handling of the stack trace combines it into just the StackTrace with the additional "At line" inrfo (the character offset) appended. 
+    $errorStackTrace            = $ErrorRecord.ScriptStackTrace
+    $positionMsg                = $ErrorRecord.InvocationInfo.PositionMessage  
+    [int]$positionMsgLineNumber = $ErrorRecord.InvocationInfo.ScriptLineNumber # line number from "At line" 
+    $characterPositionMsg       = $ErrorRecord.InvocationInfo.OffsetInLine     # character offset on "At line"
+
+    # split multi line string -> array
+    [array]$errorStackTrace = $errorStackTrace.Split("`n") 
+    # if first line of the stack trace matches the "At line" data, combine them.
+    if($errorStackTrace[0].Contains("line $positionMsgLineNumber")){ 
+        $errorStackTrace[0] = $errorStackTrace[0].Replace("line $positionMsgLineNumber", "line $positionMsgLineNumber, char $characterPositionMsg") 
+
+        [array]$positionMsg = $positionMsg.Split("`n")
+        # skip the first line to remove the redundant "At line" and combine the array back into a multi-line string for the error output
+        [string]$positionMsg = $positionMsg[1..$positionMsg.Count] -join "`n"
+    }
+
+    [string]$errorStackTrace = $errorStackTrace -join "`n"
+
+                                                    # func erroring line was in                  # func/cmdlet that threw the error                        # error msg                                                          # both of these are At line information 
+    $ErrorRecord.Exception.Data.CustomMessage = $((($ErrorRecord.InvocationInfo.InvocationName,  $ErrorRecord.Exception.CommandInvocation.InvocationName,  $ErrorRecord.Exception.Message  | Where-Object { $_ }) -join " : "), $errorStackTrace,$positionMsg -join "`n")
+
+    $script:errorParams = @{
+        Exception           = $ErrorRecord.Exception
+        Message             = $ErrorRecord.Exception.Data.CustomMessage
+        Category            = $ErrorRecord.CategoryInfo.Category
+        CategoryReason      = $ErrorRecord.CategoryInfo.Reason
+        CategoryTargetName  = $ErrorRecord.CategoryInfo.TargetName
+        CategoryTargetType  = $ErrorRecord.CategoryInfo.TargetType
+        TargetObject        = $ErrorRecord.TargetObject
+        CategoryActivity    = $ErrorRecord.CategoryInfo.Activity
+        ErrorId             = $ErrorRecord.FullyQualifiedErrorId 
+    }
+
+    Write-Error @errorParams 
+
+    # decided to use this "hack" to halt execution rather than "throw" since terminating errors can be caught within a parent try-catch block potentially causing behaviour we do not expect/want
+    if($throw){ Break Script }
+}
+
+<#
+.SYNOPSIS
+    Retries execution of the erroring line with an exponential back-off strategy.
+
+.DESCRIPTION
+    The Redo-WithExponentialBackoff function attempts to execute the command which resulted in an error from within a Try block.
+    This is particularly useful for tasks that may encounter transient errors and need to be retried with an increasing interval for highest chance of success. E.g. if an API is overloaded
+    The function takes the ErrorRecord $_ in the Catch block as input.
+
+    *It is important to keep in mind that when leveraging this, there should only be 1 line within the Try block, as that is all that will be re-executed.
+    *If there are important lines in the same Try block, they would not be executed unless input in the Catch block, so it would be best to just put them in their own block.
+
+.PARAMETER ErrorRecord
+    The ErrorRecord within a Catch block is referencable as $_ . This needs passed to the function which will extract the line which threw an error from the ErrorRecord.InvocationInfo.Line property and execute it again with delays.
+
+.PARAMETER MaxRetries
+    Specifies the maximum number of retries before giving up. The default is 3 retries.
+
+.PARAMETER InitialDelay
+    Specifies the initial delay in seconds before the first retry attempt. The default value is 15 seconds.
+
+.PARAMETER BackoffFactor
+    Specifies the factor by which the delay increases after each retry. The default value is 2.0, doubling the delay with each retry.
+
+.EXAMPLE
+
+    Try {
+        Get-ChildItem -Path "asdjiasdasd" -ErrorAction stop
+    } Catch {
+        Redo-WithExponentialBackoff -ErrorRecord $_ -InitialDelay 2
+    }
+
+    OUTPUT:
+
+    Re-executing the following ScriptBlock with exponential back-off:
+	    Get-ChildItem -Path "asdjiasdasd" -ErrorAction stop
+    Execution failed retrying in 2 seconds... Error message: Cannot find path 'C:\WINDOWS\system32\asdjiasdasd' because it does not exist. 
+    Execution failed retrying in 4 seconds... Error message: Cannot find path 'C:\WINDOWS\system32\asdjiasdasd' because it does not exist. 
+    Operation failed after 3 retries... Throwing Last ErrorRecord:
+    Get-ChildItem : Cannot find path 'C:\WINDOWS\system32\asdjiasdasd' because it does not exist.
+    At line:1 char:1
+    + Get-ChildItem -Path "asdjiasdasd" -ErrorAction stop
+    + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        + CategoryInfo          : ObjectNotFound: (C:\WINDOWS\system32\asdjiasdasd:String) [Get-ChildItem], ItemNotFoundException
+        + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetChildItemCommand
+
+.NOTES
+    Author: Joey Eckelbarger
+#>
+
+function Redo-WithExponentialBackoff {
+    param(
+        [System.Management.Automation.ErrorRecord]$ErrorRecord,
+        [int]$MaxRetries = 3,
+        [int]$InitialDelay = 30, # Initial delay in seconds; this will progress as 30 -> 60 -> 120
+        [double]$BackoffFactor = 2.0
+    )
+
+    # we need to account for if the script block is supposed to write to a var which the rest of the script may be dependent on being populated
+    # if we just execute the script block again and it writes out a variable, unfortunately that is stored in the function scope only
+    # so we need to check if it writes out a variable and change it to write to the script scope before re-execution
+    $variablePattern = '^\$\w+\s*=\s*'
+
+    # trim whitespace
+    $lineToExecute = ($ErrorRecord.InvocationInfo.Line).Trim()
+
+    # if the line has a variable written out
+    if($lineToExecute -match $variablePattern){ 
+        # replace the FIRST $ with $script: 
+        if($lineToExecute -notlike '$global:*'){
+            $lineToExecute = $lineToExecute -replace '^\$', '$global:'
+        }
+    }
+
+    # create scriptblock object
+    # can't seem to natively convert a string -> scriptblock obj without using this .NET method
+    $ScriptBlock = [Scriptblock]::Create($lineToExecute)
+
+    Write-Output "Re-executing the following ScriptBlock with exponential back-off:`n`t$ScriptBlock"
+
+    $currentRetry = 1
+
+    while ($currentRetry -le $MaxRetries) {
+        try {
+            # Try to execute the script block again
+            Invoke-Command -ScriptBlock $ScriptBlock -NoNewScope
+            Write-Output "Operation succeeded on retry #$($currentRetry)."
+            return
+        } catch {
+            $newErrorRecord = $_
+
+            # If an error occurs, calc delay for next re-try.
+            $delay = [math]::Pow($BackoffFactor, $currentRetry-1) * $InitialDelay
+            $currentRetry++
+
+            Write-Output "Execution failed retrying in $delay seconds... Error message: $($newErrorRecord.Exception.Message) "
+            Start-Sleep -Seconds $delay
+            
+        }
+    }
+
+    if ($currentRetry -ge $MaxRetries) {
+        Write-Output "Operation failed after $MaxRetries retries... Throwing Last ErrorRecord:"
+        Out-Error $newErrorRecord
+        throw $newErrorRecord
+    }
+}
+
+<#
+.SYNOPSIS
+    Executes a script block in the security context of a different user.
+
+.DESCRIPTION
+    The Invoke-ImpersonatedCommand function is designed to run a specified script block under the security context of another user, using Windows impersonation techniques.
+
+    This is particularly useful for scenarios where cmdlets (such as Group Policy Object (GPO) management cmdlets) do not natively support a -Credential parameter. By impersonating the target user context, this function allows such cmdlets to be executed with the necessary privileges or domain context.
+
+    The impersonation is done at the thread level using Windows APIs (such as LogonUser and ImpersonateLoggedOnUser). This means only the PowerShell thread executing the command is running as the impersonated user. It does not spawn a separate process or session, so access is scoped to resources available via the impersonated token (e.g., domain GPO objects).
+
+    Note:
+    - This function is only effective when executed with adequate permissions. The calling user must have the right to impersonate others (e.g., "Act as part of the operating system" or "Impersonate a client after authentication").
+    - Impersonation works only on Windows and in environments where token duplication and impersonation APIs are permitted.
+    - It does not support full interactive login sessions or GUI interactions—only thread-level access for command execution.
+
+.PARAMETER Credential
+    Specifies the user account to impersonate. Must be a valid [System.Management.Automation.PSCredential] object. The user must exist and be authorized to log in locally or to the domain, depending on context.
+
+.PARAMETER ScriptBlock
+    The PowerShell script block to execute as the impersonated user. The script block runs on the same thread with the impersonated user's security context.
+
+.PARAMETER ArgumentList
+    An optional array of arguments to pass to the script block. These values are forwarded in the order provided and accessible via `param()` within the script block.
+
+.EXAMPLE
+    PS C:\> $cred = Get-Credential "domain\gpoadmin"
+    PS C:\> Invoke-ImpersonatedCommand -Credential $cred -ScriptBlock { Get-GPO -Name "Default Domain Policy" }
+
+    This example runs `Get-GPO` as a domain GPO administrator, bypassing the lack of native credential support in the GPO cmdlet.
+
+.EXAMPLE
+    PS C:\> $cred = Get-Credential "domain\gpoadmin"
+    PS C:\> Invoke-ImpersonatedCommand -Credential $cred -ScriptBlock {
+        param($name)
+        Set-GPRegistryValue -Name $name -Key "HKCU\Software\Policies\MyApp" -ValueName "Setting" -Type String -Value "Enabled"
+    } -ArgumentList "MyGPO"
+
+    This example updates a GPO registry value as the impersonated user, which would not be possible using standard credentials with `Set-GPRegistryValue`.
+
+#>
+function Invoke-ImpersonatedCommand {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory)][ScriptBlock]$ScriptBlock,
+        [Parameter(Mandatory=$false)][object[]]$ArgumentList
+    )
+    # Add Win32 Advapi32 LogonUser 
+    if (-not ("Win32.Advapi32" -as [type])) {
+        Add-Type -Namespace Win32 -Name Advapi32 -MemberDefinition @"
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool LogonUser(
+            string lpszUsername, string lpszDomain, string lpszPassword,
+            int dwLogonType, int dwLogonProvider,
+            out System.IntPtr phToken);
+"@
+    }
+    # Get credential parts
+    $userParts = $Credential.UserName.Split('@')
+    if ($userParts.Count -ne 2) {
+        throw "Credential username must be in the format user@domain"
+    }
+    $user = $userParts[0]
+    $domain = $userParts[1]
+    
+    # Try to logon and impersonate
+    $token = [IntPtr]::Zero
+    Write-Output "Attempting LogonUser as $user at $domain..."
+    if (-not [Win32.Advapi32]::LogonUser($user, $domain, $Credential.GetNetworkCredential().Password, 9, 3, [ref]$token)) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "LogonUser failed with error code $errorCode"
+    }
+    $identity = New-Object System.Security.Principal.WindowsIdentity($token)
+    $impersonationContext = $identity.Impersonate()
+    Write-Output "Impersonating $($credential.UserName) as $($identity.Name)..."
+    # Run scriptblock as impersonated user
+    try {
+        Write-Output "Executing script block as impersonated user..."
+        & $ScriptBlock @ArgumentList
+    }
+    catch {
+        Write-Warning "Exception during impersonated command execution: $($_.Exception.Message)"
+        throw $_
+    }
+    finally {
+        Write-Output "Reverting impersonation."
+        $impersonationContext.Undo()
+        [void][System.Runtime.InteropServices.Marshal]::Release($token)
+    }
+}
+
+Export-ModuleMember -Function @("New-TemporaryDirectory","New-SecurePassword","Out-Error","Redo-WithExponentialBackoff","Invoke-ImpersonatedCommand") 
