@@ -19,8 +19,16 @@ Unblock-File .\FixMissingMsi.zip
 Expand-Archive .\FixMissingMsi.zip -Force
 
 
-# make folder on fileshare
+# make folders needed on fileshare
 New-Item -ItemType Directory "$fileShareServer\FixMissingMSI" -Force | out-null
+
+$foldersToCreate = "\\$fileShareServer\FixMissingMSI\Cache\Patches\",
+                   "\\$fileShareServer\FixMissingMSI\Cache\Products\",
+                   "\\$fileShareServ\FixMissingMSI\Reports"
+                   
+$foldersToCreate | ForEach-Object {
+    New-Item -ItemType Directory $_ -Force | out-null
+}
 
 Get-ChildItem "\\$fileShareServer\FixMissingMSI" -File | Foreach-Object {
     Copy-Item $_.FullName -Destination "\\$fileShareServer\FixMissingMSI\$_" -Force | out-null
