@@ -20,20 +20,20 @@ The workflow is broken into **four steps**. Some are run interactively, while ot
 ## Overview
 
 1. **Prepare the environment**  
-   Run **Step 0** interactively to set up the network file share and download + stage the FixMissingMSI application.
+   Run **Step0-Initialize-FileShare.ps1** interactively to set up the network file share and download + stage the FixMissingMSI application.
 
 2. **Collect missing MSI/MSP data**  
-   Deploy **Step 1** via MECM to all relevant servers. Each server runs FixMissingMSI **in non-interactive mode**, attempts to repair missing installer files from its **local cache**, and then checks the **shared cache** if it exists.  
+   Deploy **Step1-Invoke-FixMissingMSI.ps1** via MECM to all relevant servers. Each server runs FixMissingMSI **in non-interactive mode**, attempts to repair missing installer files from its **local cache**, and then checks the **shared cache** if it exists.  
    > On the first run, the shared cache won’t exist yet, so only local cache recovery will be possible. A per-server `.CSV` report is produced listing unresolved files.
 
 3. **Merge reports**  
-   Run **Step 2** interactively to consolidate `.CSV` files into one master report of unresolved files.
+   Run **Step2-Merge-MissingMSIReports.ps1** interactively to consolidate `.CSV` files into one master report of unresolved files.
 
 4. **Populate local caches**  
-   Deploy **Step 3** via MECM to populate the shared MSI/MSP cache.
+   Deploy **Step3-Populate-MsiCache.ps1** via MECM to populate the shared MSI/MSP cache.
 
 5. **Restore missing files from shared cache**  
-   Deploy **Step 1** again via MECM to restore missing files from the shared MSI/MSP cache.
+   Deploy **Step1-Invoke-FixMissingMSI.ps1** again via MECM to restore missing files from the shared MSI/MSP cache.
 
 
 ---
