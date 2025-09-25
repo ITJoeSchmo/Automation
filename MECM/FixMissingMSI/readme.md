@@ -30,7 +30,11 @@ The workflow is broken into **four steps**. Some are run interactively, while ot
    Run **Step 2** interactively to consolidate `.CSV` files into one master report of unresolved files.
 
 4. **Populate local caches**  
-   Deploy **Step 3** via MECM to repopulate MSI/MSP caches across all servers. By this stage, the **shared cache is populated**, so servers can benefit from both local and shared sources.
+   Deploy **Step 3** via MECM to populate the shared MSI/MSP cache.
+
+5. **Restore missing files from shared cache**  
+   Deploy **Step 1** again via MECM to restore missing files from the shared MSI/MSP cache.
+
 
 ---
 
