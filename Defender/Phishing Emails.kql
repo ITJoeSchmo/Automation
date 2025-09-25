@@ -1,0 +1,71 @@
+// Detects potential phishing campaigns by correlating bulk email activity,
+// risky sign-in events, and suspicious inbox rule creation. 
+//
+// Logic overview:
+// 1. Identify bulk email senders based on large recipient counts and EmailClusterId.
+// 2. Expand to other messages within the same EmailClusterId for campaign grouping.
+// 3. Correlate sender accounts with risky sign-in events from the same IP address.
+// 4. Check for malicious inbox rules (e.g., auto-delete) created by the same accounts.
+// 5. Join signals together to surface likely phishing campaigns where
+//    - A new inbox deletion rule was created within ~45 minutes of bulk sends.
+//    - The campaign activity occurred within ~12 hours of a risky sign-in.
+//
+// Output includes sender details, cluster info, campaign timing, sign-in risk level,
+// and inbox rule data to help analysts triage suspicious campaigns efficiently.
+
+// Step 1: Get bulk email senders and their distinct EmailClusterIds 
+let BulkSenderClusterIds = EmailEvents
+| where isnotempty(SenderObjectId)
+| summarize 
+    MessagesSent = count_distinct(RecipientEmailAddress) 
+    by SenderFromAddress, Subject=trim(" ", replace_regex(Subject, @"\[.*?\]", "")), EmailClusterId
+| where MessagesSent > 500
+| distinct EmailClusterId;
+
+// Step 2: Get other emails sent with the same EmailClusterId 
+let SuspiciousSenders = EmailEvents
+| where EmailClusterId in (BulkSenderClusterIds)
+| summarize 
+    FirstSendTimestamp = min(Timestamp), 
+    LastSendTimestamp = max(Timestamp), 
+    MessagesSent = count_distinct(RecipientEmailAddress) 
+    by SenderFromAddress, AccountObjectId=tostring(SenderObjectId), Subject=trim(" ", replace_regex(Subject, @"\[.*?\]", "")), IPAddress = iff(isnotempty(SenderIPv4), SenderIPv4, SenderIPv6), EmailClusterId;
+
+// Step 3: Get first logon from same IP + user combo where RiskLevelDuringSignIn is not null
+let FirstIPLogonWithRiskLevel = AADSignInEventsBeta
+| where IPAddress in (SuspiciousSenders | distinct IPAddress) and AccountObjectId in (SuspiciousSenders | distinct AccountObjectId)
+| where isnotempty(RiskLevelDuringSignIn) 
+| summarize arg_min(Timestamp, RiskLevelDuringSignIn) by IPAddress, AccountObjectId;
+
+// Step 4: Check if this user also created a new inbox rule to delete emails
+let NewInboxRuleDeletesMessage = CloudAppEvents
+| where ActionType == "New-InboxRule" and Application == "Microsoft Exchange Online"
+| where AccountObjectId in (SuspiciousSenders | distinct AccountObjectId)
+| mv-apply p=todynamic(ActivityObjects) on (
+    where p.Name == "Name"
+    | extend RuleName = p.Value
+)
+| mv-apply p=todynamic(ActivityObjects) on (
+    where p.Name == "DeleteMessage"
+    | extend DeleteMessage = p.Value
+)
+| where DeleteMessage == "True"
+| project Timestamp, AccountObjectId, IPAddress, ActionType, RuleName, DeleteMessage, UncommonForUser, LastSeenForUser;
+
+// Step 5: Join suspicious senders with other defined tables for the full picture 
+// inner join on FirstIPLogonWithRiskLevel filters results to only include users that have a RiskLevelDuringSignIn
+// inner join on NewInboxRuleDeletesMessage  filters results to only include users that had created a rule to delete incoming mail 
+SuspiciousSenders
+| join kind=inner (
+    FirstIPLogonWithRiskLevel
+    | project-rename FirstLogonTimestamp=Timestamp
+) on AccountObjectId,IPAddress
+| join kind=inner (
+    NewInboxRuleDeletesMessage
+    | project-rename NewInboxRuleTimestamp = Timestamp
+) on AccountObjectId
+| project SenderFromAddress, AccountObjectId, Subject, EmailClusterId, IPAddress, MessagesSent, FirstSendTimestamp, MinutesBetweenFirstSend_LastSend=toint((LastSendTimestamp - FirstSendTimestamp) / 1m), LastSendTimestamp, // from SuspiciousSenders (EmailEvents)
+    FirstLogonTimestamp, MinutesBetweenFirstSend_FirstLogon=toint((FirstSendTimestamp - FirstLogonTimestamp) / 1m) , RiskLevelDuringSignIn, // from FirstIPLogonWithRiskLevel (AADSignInEventsBeta)
+    NewInboxRuleTimestamp, MinutesBetweenNewInboxRule_FirstSend=toint((FirstSendTimestamp - NewInboxRuleTimestamp) / 1m) , RuleName, DeleteMessage, UncommonForUser // from NewInboxRuleDeletesMessage (CloudAppEvents)
+| where MinutesBetweenNewInboxRule_FirstSend < 45 // helps filter out potential false-positives as typically phishing campaigns create a new inbox deletion rule within ~45 minutes before they blast emails
+| where MinutesBetweenFirstSend_FirstLogon < 720  // helps filter out potential false-positives as typically the phishing campaign begins within ~12 hours of the first logon. 
