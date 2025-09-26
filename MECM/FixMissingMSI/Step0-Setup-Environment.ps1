@@ -11,10 +11,15 @@
     It performs the following:
     1. Downloads the FixMissingMSI zip from GitHub release.
     2. Expands the archive to a temp working folder.
-    3. Creates a standardized folder layout beneath -FileSharePath (UNC):
-     \\<Server>\<Share>\{FixMissingMSI, Cache\Products, Cache\Patches, Reports}
+    3. Creates a standardized layout beneath -FileSharePath\FixMissingMSI:
+       \\<Server>\<Share>\FixMissingMSI\
+          Cache\Products\
+          Cache\Patches\
+          Reports\
     4. Copies the FixMissingMSI binaries into \\<Server>\<Share>\FixMissingMSI.
-    5. Grants the "Domain Computers" group Read and Write NTFS permissions on the share root.
+    5. Grants NTFS permissions:
+       - App folder (FixMissingMSI): "Domain Computers" = Read & Execute
+       - Cache and Reports:          "Domain Computers" = Read, Write (CI/OI)
     
     > Note: FixMissingMSI is a GUI application without a native CLI. Later steps invoke its 
     > internal methods via .NET reflection to run it non-interactively. This script
@@ -30,10 +35,10 @@
     Local working directory for download and extraction. Defaults to $env:TEMP.
 
 .EXAMPLE
-PS> .\Step0-Setup-Environment.ps1 -FileSharePath \\FS01\FixMissingMSI
+PS> .\Step0-Setup-Environment.ps1 -FileSharePath "\\FS01\"
     
-    Creates the folder layout under \\FS01\FixMissingMSI, downloads and stages FixMissingMSI,
-    and grants Domain Computers read/write NTFS permissions.
+    Creates \\FS01\Software\FixMissingMSI with the required subfolders, downloads and stages FixMissingMSI,
+    sets read/execute on the app folder and read/write on Cache and Reports for Domain Computers.
 
 .NOTES
     Author: Joey Eckelbarger
@@ -43,8 +48,8 @@ PS> .\Step0-Setup-Environment.ps1 -FileSharePath \\FS01\FixMissingMSI
         Source: https://github.com/suyouquan/SQLSetupTools/releases/tag/V2.2.1
             
     Security:
-        This script grants NTFS Read and Write to "Domain Computers" on the app folder only
-        (\\<Server>\<Share>\FixMissingMSI). Adjust to your organization’s standards if needed.
+        App folder is readable but not writable by "Domain Computers".
+        Cache and Reports are writable to allow servers to upload MSI/MSP files and CSV reports.
     
     Requires:
         - PowerShell 5.1+ (for Expand-Archive)
@@ -69,9 +74,10 @@ $ProgressPreference = 'SilentlyContinue'  # Progress UI slows iwr download speed
 # Normalize and compose paths once for clarity and to avoid typos.
 $ShareRoot         = $FileSharePath.TrimEnd('\')
 $AppFolder         = Join-Path $ShareRoot 'FixMissingMSI'
-$CacheProductsPath = Join-Path $ShareRoot 'Cache\Products'
-$CachePatchesPath  = Join-Path $ShareRoot 'Cache\Patches'
-$ReportsPath       = Join-Path $ShareRoot 'Reports'
+$CacheRoot         = Join-Path $AppFolder 'Cache'
+$CacheProductsPath = Join-Path $CacheRoot 'Products'
+$CachePatchesPath  = Join-Path $CacheRoot 'Patches'
+$ReportsPath       = Join-Path $AppFolder 'Reports'
 
 $ZipPath    = Join-Path $TempPath 'FixMissingMSI.zip'
 $ExpandPath = Join-Path $TempPath 'FixMissingMSI_Expanded'
@@ -98,10 +104,15 @@ if (Test-Path -LiteralPath $ExpandPath) {
 }
 
 # Create folder layout idempotently.
-foreach ($folder in @($ShareRoot,$AppFolder,$CacheProductsPath,$CachePatchesPath,$ReportsPath)) {
-    if (-not (Test-Path -LiteralPath $folder)) {
-        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+Try {
+    foreach ($folder in @($AppFolder,$CacheProductsPath,$CachePatchesPath,$ReportsPath)) {
+        if (-not (Test-Path -LiteralPath $folder)) {
+            New-Item -ItemType Directory -Path $folder -Force | Out-Null
+        }
     }
+} Catch {
+    Write-Error $_
+    Throw "Failed to create folders on $FileSharePath"
 }
 
 # Download upstream tool.
@@ -114,23 +125,40 @@ Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExpandPath -Force
 # Copy tool files into $ExpandPath
 Copy-Item -Path (Join-Path $ExpandPath '*') -Destination $AppFolder -Recurse -Force
 
-# Grant Domain Computers read/write on the share root.
+# Identity and rights
 # targeted servers need to copy up msi/msp and write .csv reports.
-$identity  = 'Domain Computers'
-$rights    = [System.Security.AccessControl.FileSystemRights]'Read, Write'
-$inherit   = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-$propagate = [System.Security.AccessControl.PropagationFlags]::None
-$type      = [System.Security.AccessControl.AccessControlType]::Allow
+$domainComputers = 'Domain Computers'
+$readExec = [System.Security.AccessControl.FileSystemRights]'ReadAndExecute'
+$readWriteDelete = [System.Security.AccessControl.FileSystemRights]::Modify
+$ci = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit'
+$oi = [System.Security.AccessControl.InheritanceFlags]'ObjectInherit'
+$inheritBoth = $ci -bor $oi
+$none = [System.Security.AccessControl.PropagationFlags]::None
+$allow = [System.Security.AccessControl.AccessControlType]::Allow
 
-$acl  = Get-Acl -LiteralPath $AppFolder
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, $rights, $inherit, $propagate, $type)
-$null = $acl.AddAccessRule($rule)
-Set-Acl -Path $AppFolder -AclObject $acl
+# 1) App folder: ensure Domain Computers have Read & Execute only.
+#    Break inheritance on the app folder so any parent write permissions do not flow down.
+$aclApp = Get-Acl -LiteralPath $AppFolder
+$aclApp.SetAccessRuleProtection($true, $true)  # protect; convert inherited to explicit
+$aceReadExec = New-Object System.Security.AccessControl.FileSystemAccessRule($domainComputers, $readExec, $inheritBoth, $none, $allow)
+[void]$aclApp.AddAccessRule($aceReadExec)
+Set-Acl -Path $AppFolder -AclObject $aclApp
+
+# 2) Cache: Domain Computers Read + Write (CI/OI)
+$aclCache = Get-Acl -LiteralPath $CacheRoot
+$aceRW = New-Object System.Security.AccessControl.FileSystemAccessRule($domainComputers, $readWriteDelete, $inheritBoth, $none, $allow)
+[void]$aclCache.AddAccessRule($aceRW)
+Set-Acl -Path $CacheRoot -AclObject $aclCache
+
+# 3) Reports: Domain Computers Read + Write (CI/OI)
+$aclReports = Get-Acl -LiteralPath $ReportsPath
+[void]$aclReports.AddAccessRule($aceRW)
+Set-Acl -Path $ReportsPath -AclObject $aclReports
 
 Write-Output "Environment setup complete."
 [PSCustomObject]@{
     "Share Root"             = $ShareRoot
     "FixMissingMSI App Path" = $AppFolder
-    "Cache Paths"            = @($CacheProductsPath,$CachePatchesPath) -join "`n"
     "Reports Path"           = $ReportsPath
+    "Cache Paths"            = @($CacheProductsPath,$CachePatchesPath) -join "`n"
 } | Format-List 
