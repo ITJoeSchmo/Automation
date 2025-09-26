@@ -4,8 +4,6 @@
     attempts to source missing MSI/MSP files from local and shared caches,
     and exports a CSV report of unresolved items.
 
-    Supports -WhatIf and -Confirm switches (high-level guard; fix execution has its own guard).
-
 .DESCRIPTION
     Intended for broad deployment (e.g., MECM). This script stages FixMissingMSI locally,
     then loads the FixMissingMSI.exe assembly and invokes its internal methods via reflection,
@@ -66,8 +64,7 @@ PS> .\Step1-Invoke-FixMissingMSI.ps1 -FileSharePath \\FS01\Software -SourcePaths
         - Read access to \\<Server>\<Share>\FixMissingMSI and subfolders
         - Write access to \\<Server>\<Share>\FixMissingMSI\Reports
 #>
-
-[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+#Requires -RunAsAdministrator
 param(
     [Parameter(Mandatory = $true)]
     [string]$FileSharePath,
@@ -95,15 +92,10 @@ if (-not (Test-Path -LiteralPath $LocalWorkPath)) {
     New-Item -ItemType Directory -Path $LocalWorkPath -Force | Out-Null
 }
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$TranscriptPath = Join-Path $LocalWorkPath "Transcript-$($env:COMPUTERNAME)-$timestamp.txt"
+$TranscriptPath = Join-Path $LocalWorkPath "Transcript-Step1-$($env:COMPUTERNAME)-$timestamp.txt"
 Start-Transcript -Path $TranscriptPath | Out-Null
 
 try {
-    # High-level guard: one decision covers staging + reflection + execution.
-    if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME, 'Stage FixMissingMSI, scan sources, generate and execute fix commands')) {
-        return
-    }
-
     # Stage FixMissingMSI locally. Copy only top-level binaries/config files.
     # Why: We need FixMissingMSI.exe and its dependencies, but not Cache\ or Reports\ folders.
     Get-ChildItem -Path $AppFolder -File | ForEach-Object {
@@ -115,7 +107,7 @@ try {
         $serverName = $env:COMPUTERNAME
 
         foreach ($source in $SourcePaths) {
-            if ($null -eq $source)) {
+            if ($null -eq $source) {
                 Write-Warning "Scanning without a valid source may yield fewer matches."
             }
 
@@ -171,6 +163,10 @@ try {
             # 9) Filter to missing or mismatched
             $badRows = $rows | Where-Object { $_.Status -in 'Missing','Mismatched' }
 
+            if($null -eq $badRows){
+                break 
+            }
+
             # 9.5) If FixCommand is empty, try building a COPY command from the shared cache
             foreach ($row in ($badRows | Where-Object { -not $_.FixCommand })) {
                 $productCandidate = Join-Path $ProductsCache (Join-Path $($row.ProductCode) (Join-Path $($row.PackageCode) $($row.PackageName)))
@@ -186,32 +182,31 @@ try {
                 }
             }
 
-            $badRowsWithFix    = $badRows | Where-Object { $_.FixCommand }
-            $badRowsWithoutFix = $badRows | Where-Object { -not $_.FixCommand } |
+            [array]$badRowsWithFix    = $badRows | Where-Object { $_.FixCommand }
+            [array]$badRowsWithoutFix = $badRows | Where-Object { -not $_.FixCommand } |
                 Select-Object Status, PackageName, ProductName, Publisher, LastUsedSource, InstallSource, InstallDate, ProductCode, PackageCode, PatchCode, CachedMsiMsp, CachedMsiMspVersion,
                               @{N='Hostname';E={$serverName}}, @{N='SourcePath';E={$source}}
 
             # Export unresolved rows to central report (per host). Overwrites by host design; adjust if you prefer timestamped files.
             $reportFile = Join-Path $ReportsPath "$serverName.csv"
-            $badRowsWithoutFix | Export-Csv -Path $reportFile -NoTypeInformation -Force
+            if($badRowsWithoutFix){
+                $badRowsWithoutFix | Export-Csv -Path $reportFile -NoTypeInformation -Force
+            }
 
-            $missingCount    = ($badRows | Where-Object { $_.Status -eq 'Missing'   }).Count
-            $mismatchedCount = ($badRows | Where-Object { $_.Status -eq 'Mismatched'}).Count
+            $missingCount    = @($badRows | Where-Object { $_.Status -eq 'Missing'   }).Count
+            $mismatchedCount = @($badRows | Where-Object { $_.Status -eq 'Mismatched'}).Count
             Write-Output "Source: $source"
             Write-Output "Missing: $missingCount  Mismatched: $mismatchedCount  To be fixed: $($badRowsWithFix.Count)"
 
-            # 10) Execute fix commands (guarded). Copies to C:\Windows\Installer as needed.
+            # 10) Execute fix commands. Copies to C:\Windows\Installer as needed.
             foreach ($row in $badRowsWithFix) {
-                if ($PSCmdlet.ShouldProcess($env:COMPUTERNAME, "Execute fix command for $($row.PackageName)")) {
-                    & cmd /c $row.FixCommand
-                }
+                Write-Output "Running $($row.FixCommand)"
+                & cmd /c $row.FixCommand
             }
         }
-    }
-    finally {
+    } finally {
         Pop-Location
     }
-}
-finally {
+} finally {
     Stop-Transcript | Out-Null
 }
