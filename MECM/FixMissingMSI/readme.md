@@ -62,7 +62,7 @@ This technique effectively **runs FixMissingMSI in non-interactive mode**, enabl
 ##  Credits
 
 The **FixMissingMSI** utility used in these scripts is authored and maintained by **[suyouquan](https://github.com/suyouquan/SQLSetupTools/releases/tag/V2.2.1)**.  
-This automation simply downloads and orchestrates the tool as part of the MECM workflow.  
+This automation simply downloads and orchestrates the tool with the ability to create a shared cache, allowing you to resolve missing MSI/MSP files from across your servers.  
 
 ---
 
