@@ -56,7 +56,7 @@ if (-not (Test-Path -LiteralPath $ReportsPath)) {
 }
 
 # Discover CSVs first; fail gracefully if none are present.
-$csvFiles = Get-ChildItem -Path $ReportsPath -Filter '*.csv' | Where-object {$_.Name -notin @("MSIProductCodes.csv","MSPPatchCodes.csv")} | Select-Object -ExpandProperty FullName
+[array]$csvFiles = Get-ChildItem -Path $ReportsPath -Filter '*.csv' | Where-object {$_.Name -notin @("MSIProductCodes.csv","MSPPatchCodes.csv")} | Select-Object -ExpandProperty FullName
 
 if (-not $csvFiles -or $csvFiles.Count -eq 0) {
     Throw "No CSV reports found in $ReportsPath. Ensure Step 1 has completed across targets."
@@ -78,9 +78,17 @@ $msp = $merged |
     Where-Object { $_.PackageName -like '*.msp' } |
     Select-Object ProductCode, PatchCode, PackageName, Publisher, ProductVersion |
     Sort-Object * -Unique
+if($msi){
+    $msi | Export-Csv -LiteralPath $msiReportPath -NoTypeInformation -Force
+} else {
+    $msi = @()
+}
 
-$msi | Export-Csv -LiteralPath $msiReportPath -NoTypeInformation -Force
-$msp | Export-Csv -LiteralPath $mspReportPath -NoTypeInformation -Force
+if($msp){
+    $msp | Export-Csv -LiteralPath $mspReportPath -NoTypeInformation -Force
+} else {
+    $msp = @()
+}
 
 # Simple summary 
 [PSCustomObject]@{
