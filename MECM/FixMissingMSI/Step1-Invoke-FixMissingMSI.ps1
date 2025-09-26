@@ -110,7 +110,7 @@ try {
 
         foreach ($source in $SourcePaths) {
             if($source -eq ""){
-                $source = "No specified source uses LastUsedSource from Registry install data"
+                $source = "No specified source uses LastUsedSource from Registry install data as well as the shared cache if available/populated."
             }
             if($null -eq $source) {
                 Write-Warning "Scanning without a valid source may yield fewer matches."
@@ -178,6 +178,7 @@ try {
                 if($row.ProductCode -and $row.PackageCode -and $row.PackageName){
                     $productCandidate = Join-Path $ProductsCache (Join-Path $($row.ProductCode) (Join-Path $($row.PackageCode) $($row.PackageName)))
                     if ((Test-Path -LiteralPath $productCandidate)) {
+                        Write-Output "Found missing files in shared cache, populating FixCommand value"
                         $row.FixCommand = "COPY `"$productCandidate`" `"C:\Windows\Installer\$($row.CachedMsiMsp)`""
                         continue
                     }
@@ -186,6 +187,7 @@ try {
                 if($row.ProductCode -and $row.PatchCode -and $row.PackageName){
                     $patchCandidate   = Join-Path $PatchesCache (Join-Path $($row.ProductCode) (Join-Path $($row.PatchCode)   $($row.PackageName)))
                     if ((Test-Path -LiteralPath $patchCandidate)) {
+                        Write-Output "Found missing files in shared cache, populating FixCommand value"
                         $row.FixCommand = "COPY `"$patchCandidate`" `"C:\Windows\Installer\$($row.CachedMsiMsp)`""
                         continue
                     }
