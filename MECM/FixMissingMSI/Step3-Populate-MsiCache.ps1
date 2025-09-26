@@ -239,83 +239,82 @@ function Get-MsiProp {
 # Load merged MSI report
 $msiReport = Join-Path $ReportsPath 'MSIProductCodes.csv'
 if (-not (Test-Path -LiteralPath $msiReport)) {
-    throw "MSI report not found: $msiReport. Ensure host can access the fileshare."
-}
-$MSIList = Import-Csv -LiteralPath $msiReport
-
-# Build list of currently registered LocalPackage MSIs (to identify "unregistered" MSI files).
-$registeredLocal = Get-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\*' |
-                   Select-Object -ExpandProperty PSPath |
-                   ForEach-Object { Get-ItemPropertyValue -Path "$_\InstallProperties" -Name LocalPackage -ErrorAction Ignore } |
-                   Where-Object { $_ } |
-                   Select-Object -Unique
-
-# Unregistered MSIs under C:\Windows\Installer that are not listed as LocalPackage.
-$unregistered = Get-ChildItem 'C:\Windows\Installer' -Filter '*.msi' -File |
-                Where-Object { $_.FullName -notin $registeredLocal } |
-                Select-Object -ExpandProperty FullName
-
-# Upload any unregistered MSIs that match the merged report identity.
-foreach ($file in $unregistered) {
-    $props = Get-MsiProp -Path $file
-    if (-not $props -or -not $props.ProductCode -or -not $props.PackageCode) { continue }
-
-    $row = $MSIList | Where-Object { $_.ProductCode -eq $props.ProductCode -and $_.PackageCode -eq $props.PackageCode } | Select-Object -First 1
-
-    # skip if this isn't in the missing report
-    if (-not $row) { continue }
-
-    $destDir  = Join-Path (Join-Path $ProductsCache $row.ProductCode) $row.PackageCode
-    $destFile = Join-Path $destDir ($row.PackageName.Trim('\'))
-
-    if (-not (Test-Path -LiteralPath $destFile)) {
-        if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-        Copy-Item -LiteralPath $file -Destination $destFile -Force
-        "Unregistered populated product $($row.ProductCode)\$($row.PackageCode)\$($row.PackageName.Trim('\'))"
-    }
-}
-
-# Upload registered/cached MSIs referenced by the merged report.
-foreach ($row in $MSIList) {
-    try {
-        $info = Get-CachedMsiInformation -ProductCode $row.ProductCode
-    } catch { continue }
-
-    if ($info.CachedMsiExists -and $info.PackageCode -eq $row.PackageCode) {
+    Write-Warning "MSI report not found: $msiReport. Ensure host can access the fileshare."
+} else {
+    $MSIList = Import-Csv -LiteralPath $msiReport
+    
+    # Build list of currently registered LocalPackage MSIs (to identify "unregistered" MSI files).
+    $registeredLocal = Get-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\*' |
+                       Select-Object -ExpandProperty PSPath |
+                       ForEach-Object { Get-ItemPropertyValue -Path "$_\InstallProperties" -Name LocalPackage -ErrorAction Ignore } |
+                       Where-Object { $_ } |
+                       Select-Object -Unique
+    
+    # Unregistered MSIs under C:\Windows\Installer that are not listed as LocalPackage.
+    $unregistered = Get-ChildItem 'C:\Windows\Installer' -Filter '*.msi' -File |
+                    Where-Object { $_.FullName -notin $registeredLocal } |
+                    Select-Object -ExpandProperty FullName
+    
+    # Upload any unregistered MSIs that match the merged report identity.
+    foreach ($file in $unregistered) {
+        $props = Get-MsiProp -Path $file
+        if (-not $props -or -not $props.ProductCode -or -not $props.PackageCode) { continue }
+    
+        $row = $MSIList | Where-Object { $_.ProductCode -eq $props.ProductCode -and $_.PackageCode -eq $props.PackageCode } | Select-Object -First 1
+    
+        # skip if this isn't in the missing report
+        if (-not $row) { continue }
+    
         $destDir  = Join-Path (Join-Path $ProductsCache $row.ProductCode) $row.PackageCode
         $destFile = Join-Path $destDir ($row.PackageName.Trim('\'))
-
-        if (-not (Test-Path -LiteralPath $destDir))  { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+    
         if (-not (Test-Path -LiteralPath $destFile)) {
-            Copy-Item -LiteralPath $info.CachedMsiPath -Destination $destFile -Force
-            "Populated product $destFile"
+            if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+            Copy-Item -LiteralPath $file -Destination $destFile -Force
+            "Unregistered populated product $($row.ProductCode)\$($row.PackageCode)\$($row.PackageName.Trim('\'))"
+        }
+    }
+    
+    # Upload registered/cached MSIs referenced by the merged report.
+    foreach ($row in $MSIList) {
+        try {
+            $info = Get-CachedMsiInformation -ProductCode $row.ProductCode
+        } catch { continue }
+    
+        if ($info.CachedMsiExists -and $info.PackageCode -eq $row.PackageCode) {
+            $destDir  = Join-Path (Join-Path $ProductsCache $row.ProductCode) $row.PackageCode
+            $destFile = Join-Path $destDir ($row.PackageName.Trim('\'))
+    
+            if (-not (Test-Path -LiteralPath $destDir))  { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+            if (-not (Test-Path -LiteralPath $destFile)) {
+                Copy-Item -LiteralPath $info.CachedMsiPath -Destination $destFile -Force
+                "Populated product $destFile"
+            }
         }
     }
 }
-
 # Load merged MSP report
 $mspReport = Join-Path $ReportsPath 'MSPPatchCodes.csv'
 if (-not (Test-Path -LiteralPath $mspReport)) {
-    throw "MSP report not found: $mspReport. Ensure host can access $FileSharePath"
-}
-
-$MSPList = Import-Csv -LiteralPath $mspReport
-
-foreach ($row in $MSPList) {
-    try {
-        $info = Get-CachedMspInformation -PatchCode $row.PatchCode
-    } catch { continue }
-
-    if ($info.CachedMspExists -and $info.PatchCode -eq $row.PatchCode) {
-        $destDir  = Join-Path (Join-Path $PatchesCache $row.ProductCode) $row.PatchCode
-        $destFile = Join-Path $destDir ($row.PackageName.Trim('\'))
-
-        if (-not (Test-Path -LiteralPath $destDir))  { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-        if (-not (Test-Path -LiteralPath $destFile)) {
-            Copy-Item -LiteralPath $info.CachedMspPath -Destination $destFile -Force
-            "Populated patch $destFile"
+    Write-Warning "MSP report not found: $mspReport. Ensure host can access $FileSharePath"
+} else {
+    $MSPList = Import-Csv -LiteralPath $mspReport
+    
+    foreach ($row in $MSPList) {
+        try {
+            $info = Get-CachedMspInformation -PatchCode $row.PatchCode
+        } catch { continue }
+    
+        if ($info.CachedMspExists -and $info.PatchCode -eq $row.PatchCode) {
+            $destDir  = Join-Path (Join-Path $PatchesCache $row.ProductCode) $row.PatchCode
+            $destFile = Join-Path $destDir ($row.PackageName.Trim('\'))
+    
+            if (-not (Test-Path -LiteralPath $destDir))  { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+            if (-not (Test-Path -LiteralPath $destFile)) {
+                Copy-Item -LiteralPath $info.CachedMspPath -Destination $destFile -Force
+                "Populated patch $destFile"
+            }
         }
     }
 }
-
 Stop-Transcript | Out-Null
