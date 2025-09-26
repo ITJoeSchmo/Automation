@@ -50,10 +50,7 @@ PS> .\Step3-Populate-MsiCache.ps1 -FileSharePath \\FS01\Software
 #>
 param(
     [Parameter(Mandatory = $true)]
-    [string]$FileSharePath,
-
-    [Parameter()]
-    [string]$LocalTranscriptPath
+    [string]$FileSharePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,10 +69,10 @@ $LocalWork = Join-Path $env:TEMP 'FixMissingMSI'
 if (-not (Test-Path -LiteralPath $LocalWork)) {
     New-Item -ItemType Directory -Path $LocalWork -Force | Out-Null
 }
-if (-not $LocalTranscriptPath) {
-    $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $LocalTranscriptPath = Join-Path $LocalWork "Transcript-Step3-$($env:COMPUTERNAME)-$ts.txt"
-}
+
+$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$LocalTranscriptPath = Join-Path $LocalWork "Transcript-Step3-$($env:COMPUTERNAME)-$timestamp.txt"
+
 Start-Transcript -Path $LocalTranscriptPath | Out-Null
 
 <#
