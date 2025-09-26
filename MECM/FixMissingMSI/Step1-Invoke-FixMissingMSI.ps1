@@ -99,7 +99,9 @@ try {
     # Stage FixMissingMSI locally. Copy only top-level binaries/config files.
     # Why: We need FixMissingMSI.exe and its dependencies, but not Cache\ or Reports\ folders.
     Get-ChildItem -Path $AppFolder -File | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $LocalWorkPath $_.Name) -Force
+        if((Test-Path -LiteralPath (Join-Path $LocalWorkPath $_.Name)) -eq $false){
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $LocalWorkPath $_.Name) -Force
+        }
     }
 
     Push-Location $LocalWorkPath
@@ -107,7 +109,10 @@ try {
         $serverName = $env:COMPUTERNAME
 
         foreach ($source in $SourcePaths) {
-            if ($null -eq $source) {
+            if($source -eq ""){
+                $source = "No specified source uses LastUsedSource from Registry install data"
+            }
+            if($null -eq $source) {
                 Write-Warning "Scanning without a valid source may yield fewer matches."
             }
 
@@ -164,26 +169,31 @@ try {
             $badRows = $rows | Where-Object { $_.Status -in 'Missing','Mismatched' }
 
             if($null -eq $badRows){
+                Write-Output "No missing files; exiting"
                 break 
             }
 
             # 9.5) If FixCommand is empty, try building a COPY command from the shared cache
             foreach ($row in ($badRows | Where-Object { -not $_.FixCommand })) {
-                $productCandidate = Join-Path $ProductsCache (Join-Path $($row.ProductCode) (Join-Path $($row.PackageCode) $($row.PackageName)))
-                $patchCandidate   = Join-Path $PatchesCache (Join-Path $($row.ProductCode) (Join-Path $($row.PatchCode)   $($row.PackageName)))
-
-                if ($row.PackageName -and (Test-Path -LiteralPath $productCandidate)) {
-                    $row.FixCommand = "COPY `"$productCandidate`" `"C:\Windows\Installer\$($row.CachedMsiMsp)`""
-                    continue
+                if($row.ProductCode -and $row.PackageCode -and $row.PackageName){
+                    $productCandidate = Join-Path $ProductsCache (Join-Path $($row.ProductCode) (Join-Path $($row.PackageCode) $($row.PackageName)))
+                    if ((Test-Path -LiteralPath $productCandidate)) {
+                        $row.FixCommand = "COPY `"$productCandidate`" `"C:\Windows\Installer\$($row.CachedMsiMsp)`""
+                        continue
+                    }
                 }
-                if ($row.PackageName -and (Test-Path -LiteralPath $patchCandidate)) {
-                    $row.FixCommand = "COPY `"$patchCandidate`" `"C:\Windows\Installer\$($row.CachedMsiMsp)`""
-                    continue
+
+                if($row.ProductCode -and $row.PatchCode -and $row.PackageName){
+                    $patchCandidate   = Join-Path $PatchesCache (Join-Path $($row.ProductCode) (Join-Path $($row.PatchCode)   $($row.PackageName)))
+                    if ((Test-Path -LiteralPath $patchCandidate)) {
+                        $row.FixCommand = "COPY `"$patchCandidate`" `"C:\Windows\Installer\$($row.CachedMsiMsp)`""
+                        continue
+                    }
                 }
             }
 
-            [array]$badRowsWithFix    = $badRows | Where-Object { $_.FixCommand }
-            [array]$badRowsWithoutFix = $badRows | Where-Object { -not $_.FixCommand } |
+            $badRowsWithFix    = @($badRows | Where-Object { $_.FixCommand })
+            $badRowsWithoutFix = @($badRows | Where-Object { -not $_.FixCommand }) |
                 Select-Object Status, PackageName, ProductName, Publisher, LastUsedSource, InstallSource, InstallDate, ProductCode, PackageCode, PatchCode, CachedMsiMsp, CachedMsiMspVersion,
                               @{N='Hostname';E={$serverName}}, @{N='SourcePath';E={$source}}
 
@@ -196,11 +206,11 @@ try {
             $missingCount    = @($badRows | Where-Object { $_.Status -eq 'Missing'   }).Count
             $mismatchedCount = @($badRows | Where-Object { $_.Status -eq 'Mismatched'}).Count
             Write-Output "Source: $source"
-            Write-Output "Missing: $missingCount  Mismatched: $mismatchedCount  To be fixed: $($badRowsWithFix.Count)"
+            Write-Output "Missing: $missingCount`nMismatched: $mismatchedCount`nTo be fixed: $($badRowsWithFix.Count)"
 
             # 10) Execute fix commands. Copies to C:\Windows\Installer as needed.
             foreach ($row in $badRowsWithFix) {
-                Write-Output "Running $($row.FixCommand)"
+                "$($row.FixCommand)"
                 & cmd /c $row.FixCommand
             }
         }
