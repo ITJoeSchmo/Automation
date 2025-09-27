@@ -1,71 +1,70 @@
-# FixMissingMSI Automation
+# Windows Installer Cache Recovery Automation (with FixMissingMSI)
 
-This folder contains a set of PowerShell scripts and supporting files to automate rebuilding the **MSI/MSP cache** on servers using **MECM**  and the **FixMissingMSI** utility via PowerShell.  
+A set of PowerShell scripts to automate the recovery of missing files in the **Windows Installer cache (`C:\Windows\Installer`)**, using the **[FixMissingMSI utility](https://github.com/suyouquan/SQLSetupTools/releases/tag/V2.2.1)** at scale.  
 
-The workflow is broken into **four steps**. Some are run interactively, while others are deployed via MECM or other centralized management.
+This automation is designed for scenarios where `C:\Windows\Installer` was "cleaned" to save disk space using scripts that compare files against only the Patches registry and then delete everything else (e.g., a script that enumerates `HKLM:\...\Installer\UserData\S-1-5-18\Patches\*\LocalPackage`, compares to `C:\Windows\Installer\*.msp,*.msi`, and removes the "unregistered" remainder). Because that approach ignores the Products registration (for MSIs), it can delete legitimate MSI cache files. Once those MSI files are gone, many applications fail to update or uninstall without manual sourcing (e.g., Azure Arc Agent, SQL Server, Exchange Server, Microsoft Edge, and others).
 
----
-
-## Contents
-
-| Script | Execution Context | Purpose |
-|--------|------------------|---------|
-| `Step0-Initialize-FileShare.ps1` | **Interactive** | Prepares the file share and downloads the [FixMissingMSI application by suyouquan (Simon Su @Microsoft)](https://github.com/suyouquan/SQLSetupTools/releases/tag/V2.2.1), then copies it to the file share for use in later steps. |
-| `Step1-Invoke-FixMissingMSI.ps1` | **MECM Deployed** | Runs FixMissingMSI **non-interactively** on each server. It attempts to resolve missing MSI/MSP files from the **local cache first** and then from the **shared cache** if available. On the very first run, the shared cache will not yet exist, so only local sources can be used. Each server generates a `.CSV` report listing unresolved files. |
-| `Step2-Merge-MissingMSIReports.ps1` | **Interactive** | Merges the `.CSV` reports generated in Step 1 into a consolidated list for reference by Step3. |
-| `Step3-Populate-MsiCache.ps1` | **MECM Deployed** | Uses both the **local cache** and the now-populated **shared cache** to repopulate the MSI/MSP cache across all targeted servers. |
+By orchestrating FixMissingMSI through **centralized deployment tools** (MECM, Ansible, Azure Arc, etc.), these scripts allow you to:  
+- Run FixMissingMSI **non-interactively** on all servers.  
+- Collect **CSV reports** of missing MSI/MSP files.  
+- Build a **shared cache** populated by hosts that already possess the needed files, driven by the merged report.
+- Restore installer functionality at scale without manual intervention.  
 
 ---
 
-## Overview
+## What This Adds Beyond FixMissingMSI
 
-1. **Prepare the environment**  
-   Run **Step0-Initialize-FileShare.ps1** interactively to set up the network file share and download + stage the FixMissingMSI application.
+FixMissingMSI is a GUI-only troubleshooting tool. On its own it:
+- Cannot be run non-interactively.
+- Cannot scale across many servers.
+- Cannot share repair data between machines.
 
-2. **Collect missing MSI/MSP data**  
-   Deploy **Step1-Invoke-FixMissingMSI.ps1** via MECM to all relevant servers. Each server runs FixMissingMSI **in non-interactive mode**, attempts to repair missing installer files from its **local cache**, and then checks the **shared cache** if it exists.  
-   > On the first run, the shared cache won’t exist yet, so only local cache recovery will be possible. A per-server `.CSV` report is produced listing unresolved files.
-
-3. **Merge reports**  
-   Run **Step2-Merge-MissingMSIReports.ps1** interactively to consolidate `.CSV` files into one master report of unresolved files.
-
-4. **Populate local caches**  
-   Deploy **Step3-Populate-MsiCache.ps1** via MECM to populate the shared MSI/MSP cache.
-
-5. **Restore missing files from shared cache**  
-   Deploy **Step1-Invoke-FixMissingMSI.ps1** again via MECM to restore missing files from the shared MSI/MSP cache.
-
+This automation adds:
+- Non-interactive execution of FixMissingMSI via .NET Reflection.
+- Centralized reporting in `.CSV` format of unresolved installer files.
+- Shared cache support driven by a unified report: machines that already have the required MSI/MSP upload them for peers.
+- Integration with centralized deployment tools (MECM, Ansible, Azure Arc, etc.) to scale across entire server fleets.
 
 ---
 
-## Technical Details
+## Workflow
 
-The **FixMissingMSI** utility was designed as a WinForms GUI application and does not provide a native way to run in non-interactive or command-line mode.  
+| Script | Run Context | Purpose |
+|--------|-------------|---------|
+| `Step0-Initialize-FileShare.ps1` | Interactive | Prepares the file share, downloads FixMissingMSI, and stages the app and folder layout. |
+| `Step1-Invoke-FixMissingMSI.ps1` | Centralized Deployment (MECM/Ansible/Azure Arc/etc.) | Runs FixMissingMSI non-interactively on each server. Attempts to restore missing MSI/MSP files from the local cache (and from the shared cache if it exists). Produces a per-host `.CSV` report. |
+| `Step2-Merge-MissingMSIReports.ps1` | Interactive | Merges all per-host `.CSV` reports from Step1 into a unified list of missing files. |
+| `Step3-Populate-MsiCache.ps1` | Centralized Deployment (MECM/Ansible/Azure Arc/etc.) | Populates the shared cache only with MSI/MSP files flagged as missing in the merged report. Hosts upload copies they already have locally; this step does not indiscriminately mirror local caches. |
+| `Step1-Invoke-FixMissingMSI.ps1` (re-run) | Centralized Deployment (MECM/Ansible/Azure Arc/etc.) | Run again after Step3. This time servers can source their missing files directly from the populated shared cache. |
 
-This automation works around that limitation by leveraging **.NET Reflection** to load and interact with the application’s internal types and methods directly, bypassing the UI.  
-
-In practice, the Step1-Invoke-FixMissingMSI.ps1 does the following:
-
-1. **Load the FixMissingMSI assembly** (`FixMissingMSI.exe`) into the current PowerShell session.  
-2. **Instantiate the UI form** (`Form1`) only to initialize handles; the UI itself is never shown, but this step is required or backend methods will throw null reference errors.  
-3. **Access internal data structures** such as `myData` and `CacheFileStatus` to configure scan parameters (setup source, filters, etc.).  
-4. **Invoke private and public methods** like `ScanSetupMedia`, `ScanProducts`, and `AddMsiMspPackageFromLastUsedSource` to replicate what the GUI would normally trigger when clicking buttons.  
-5. **Call `UpdateFixCommand`** to populate "FixCommand" which are copy cmds for each missing/mismatched installer it found a source for.  
-6. **Extract results from the `rows` collection**, filtering to only those entries with a `Missing` or `Mismatched` status.  
-
-This technique effectively runs FixMissingMSI in non-interactive mode, enabling it to be orchestrated by MECM, and the additional scripts enable building a shared cache in the environment enabling you to source missing files from another host without manual efforts..   
-
->  Note: Because this is essentially calling into an app’s internal implementation details, it’s not an officially supported API surface. If the FixMissingMSI codebase changes in future releases, reflection bindings may need to be updated.
+> Cache population is demand-driven: a server uploads a file to the shared cache only when another server’s report marks it as missing.
 
 ---
 
-##  Credits
+## How the Non-Interactive Execution Works
 
-**FixMissingMSI** is authored and maintained by **[suyouquan](https://github.com/suyouquan/SQLSetupTools/releases/tag/V2.2.1)**.  
-This automation simply downloads and orchestrates the tool with the ability to create a shared cache, allowing you to resolve missing MSI/MSP files across your servers.  
+FixMissingMSI was designed as a WinForms GUI with no CLI support.
+This automation bypasses the UI by loading the EXE via .NET Reflection and invoking internal methods directly:
+
+1. Load the assembly (`FixMissingMSI.exe`).
+2. Create the UI form object (`Form1`) to initialize internal state (UI never displayed).
+3. Access internal data structures (`myData`, `CacheFileStatus`).
+4. Call internal methods (`ScanSetupMedia`, `ScanProducts`, `AddMsiMspPackageFromLastUsedSource`).
+5. Use `UpdateFixCommand` to generate copy commands for missing/mismatched files.
+6. Collect results from the `rows` collection for further processing.
+
+> Note: This relies on internal implementation details. If FixMissingMSI changes in future versions, reflection bindings may need to be updated.
 
 ---
 
-##  Disclaimer
+## Credits
 
-These scripts are provided for internal automation purposes. Review, test, and validate them in a non-production environment before wide deployment.  
+- FixMissingMSI is authored and maintained by [suyouquan (Simon Su @ Microsoft)](https://github.com/suyouquan/SQLSetupTools/releases/tag/V2.2.1).
+- This automation orchestrates the tool in a non-interactive, scalable way and adds a shared cache mechanism.
+
+---
+
+## Disclaimer
+
+These scripts are provided for internal automation purposes.
+Review, test, and validate them in a non-production environment before deployment.
