@@ -54,7 +54,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-Set-StrictMode -Version Latest
 
 # Compose shared paths once; all shared I/O happens under the FixMissingMSI app tree.
 $ShareRoot      = $FileSharePath.TrimEnd('\')
@@ -191,6 +190,15 @@ function Get-CachedMspInformation {
     $classesSourceNet      = "HKLM:\SOFTWARE\Classes\Installer\Patches\$compressed\SourceList\Net"
     $classesSourceNetProps = Get-ItemProperty -Path $classesSourceNet -ErrorAction SilentlyContinue
 
+    if($installProps.PSObject.Properties.Name -notcontains "InstallSource"){
+        $calculatedInstallSource = (Join-Path $classesSourceNetProps.'1' $classesSourceMSPProps.PackageName)
+        if($calculatedInstallSource){
+            $installProps | Add-Member -NotePropertyName "InstallSource" -NotePropertyValue $calculatedInstallSource
+        } else {
+            $installProps | Add-Member -NotePropertyName "InstallSource" -NotePropertyValue ""
+        }
+    }
+
     [PSCustomObject]@{
         InstallSourcePath  = $installProps.InstallSource
         CachedMspPath      = $installProps.LocalPackage
@@ -218,7 +226,7 @@ function Get-MsiProp {
         if ($Path -like '*.msi') {
             $db = $installer.OpenDatabase($Path, 0) # 0 = read-only
             $view = $db.OpenView("SELECT `Value` FROM `Property` WHERE `Property`='ProductCode'")
-            $view.Execute()
+            $view.Execute() | Out-Null
             $rec = $view.Fetch()
             $productCode = if ($rec) { $rec.StringData(1) } else { $null }
             $pkgCode = ($installer.SummaryInformation($Path,0)).Property(9) # PID_REVNUMBER (PackageCode)
@@ -229,10 +237,10 @@ function Get-MsiProp {
         }
     }
     finally {
-        $view.Close()
-        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($installer)
-        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($view)
-        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+        $null = $view.Close() 
+        $null = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($installer)
+        $null = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($view)
+        $null = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($db)
     }
 }
 
@@ -303,18 +311,19 @@ if (-not (Test-Path -LiteralPath $mspReport)) {
     foreach ($row in $MSPList) {
         try {
             $info = Get-CachedMspInformation -PatchCode $row.PatchCode
-        } catch { continue }
+        
     
-        if ($info.CachedMspExists -and $info.PatchCode -eq $row.PatchCode) {
-            $destDir  = Join-Path (Join-Path $PatchesCache $row.ProductCode) $row.PatchCode
-            $destFile = Join-Path $destDir ($row.PackageName.Trim('\'))
+            if ($info.CachedMspExists -and $info.PatchCode -eq $row.PatchCode) {
+                $destDir  = Join-Path (Join-Path $PatchesCache $row.ProductCode) $row.PatchCode
+                $destFile = Join-Path $destDir ($row.PackageName.Trim('\'))
     
-            if (-not (Test-Path -LiteralPath $destDir))  { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-            if (-not (Test-Path -LiteralPath $destFile)) {
-                Copy-Item -LiteralPath $info.CachedMspPath -Destination $destFile -Force
-                "Populated patch $destFile"
+                if (-not (Test-Path -LiteralPath $destDir))  { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+                if (-not (Test-Path -LiteralPath $destFile)) {
+                    Copy-Item -LiteralPath $info.CachedMspPath -Destination $destFile -Force
+                    "Populated patch $destFile"
+                }
             }
-        }
+        } catch { continue }
     }
 }
 Stop-Transcript | Out-Null
